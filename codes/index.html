@@ -1,0 +1,555 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Machine Fault Detector</title>
+<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Barlow+Condensed:wght@300;600;800&display=swap" rel="stylesheet"/>
+<style>
+  :root {
+    --bg:        #0a0c0f;
+    --panel:     #0f1318;
+    --border:    #1e2530;
+    --normal:    #00e5a0;
+    --fault:     #ff2d55;
+    --idle:      #4a5568;
+    --text:      #c8d6e5;
+    --dim:       #3a4a5c;
+    --amber:     #ffb300;
+    --glow-n:    0 0 24px rgba(0,229,160,0.35);
+    --glow-f:    0 0 24px rgba(255,45,85,0.45);
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Barlow Condensed', sans-serif;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow-x: hidden;
+  }
+
+  /* ── scanline overlay ── */
+  body::before {
+    content: '';
+    position: fixed; inset: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0,0,0,0.07) 2px,
+      rgba(0,0,0,0.07) 4px
+    );
+    pointer-events: none;
+    z-index: 999;
+  }
+
+  /* ── Header ── */
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 18px 32px;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel);
+  }
+  .logo {
+    display: flex; align-items: center; gap: 12px;
+  }
+  .logo-icon {
+    width: 36px; height: 36px;
+    border: 2px solid var(--amber);
+    border-radius: 6px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px;
+  }
+  .logo-text {
+    font-size: 22px; font-weight: 800; letter-spacing: 3px;
+    text-transform: uppercase; color: var(--text);
+  }
+  .logo-sub {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 10px; color: var(--dim); letter-spacing: 2px;
+  }
+  .header-right {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 11px; color: var(--dim); text-align: right;
+    line-height: 1.8;
+  }
+  #clock { color: var(--amber); }
+
+  /* ── Main layout ── */
+  main {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 1fr 340px;
+    grid-template-rows: auto 1fr;
+    gap: 0;
+    padding: 0;
+  }
+
+  /* ── Status panel (left top) ── */
+  .status-panel {
+    grid-column: 1;
+    grid-row: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 48px 40px;
+    border-bottom: 1px solid var(--border);
+    border-right: 1px solid var(--border);
+    position: relative;
+    overflow: hidden;
+  }
+
+  /* corner marks */
+  .status-panel::before,
+  .status-panel::after {
+    content: '';
+    position: absolute;
+    width: 16px; height: 16px;
+    border-color: var(--dim);
+    border-style: solid;
+  }
+  .status-panel::before { top: 12px; left: 12px; border-width: 1px 0 0 1px; }
+  .status-panel::after  { bottom: 12px; right: 12px; border-width: 0 1px 1px 0; }
+
+  .status-inner {
+    text-align: center;
+  }
+  .status-label {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 11px; letter-spacing: 4px;
+    color: var(--dim); margin-bottom: 16px;
+    text-transform: uppercase;
+  }
+  .status-badge {
+    font-size: 72px; font-weight: 800;
+    letter-spacing: 6px; text-transform: uppercase;
+    transition: color 0.3s, text-shadow 0.3s;
+    line-height: 1;
+  }
+  .status-badge.normal { color: var(--normal); text-shadow: var(--glow-n); }
+  .status-badge.fault  { color: var(--fault);  text-shadow: var(--glow-f); animation: pulse-fault 0.6s infinite alternate; }
+  .status-badge.idle   { color: var(--idle); }
+
+  @keyframes pulse-fault {
+    from { text-shadow: 0 0 20px rgba(255,45,85,0.3); }
+    to   { text-shadow: 0 0 50px rgba(255,45,85,0.8), 0 0 80px rgba(255,45,85,0.3); }
+  }
+
+  .confidence-bar-wrap {
+    margin-top: 24px;
+    display: flex; align-items: center; gap: 12px;
+  }
+  .confidence-bar-bg {
+    flex: 1; height: 6px; background: var(--border); border-radius: 3px; overflow: hidden;
+  }
+  .confidence-bar-fill {
+    height: 100%; width: 0%; border-radius: 3px;
+    transition: width 0.4s ease, background 0.3s;
+  }
+  .confidence-val {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 13px; color: var(--amber); min-width: 46px; text-align: right;
+  }
+
+  /* ── Waveform panel (left bottom) ── */
+  .wave-panel {
+    grid-column: 1;
+    grid-row: 2;
+    border-right: 1px solid var(--border);
+    padding: 24px 32px;
+    display: flex; flex-direction: column; gap: 12px;
+  }
+  .panel-title {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 10px; letter-spacing: 3px; color: var(--dim);
+    text-transform: uppercase;
+  }
+  canvas#waveform {
+    width: 100%; height: 140px;
+    display: block;
+    border: 1px solid var(--border);
+    background: #080b0f;
+    border-radius: 4px;
+  }
+
+  /* ── Right sidebar ── */
+  .sidebar {
+    grid-column: 2;
+    grid-row: 1 / 3;
+    display: flex; flex-direction: column;
+    border-left: 1px solid var(--border);
+    background: var(--panel);
+  }
+
+  .sidebar-section {
+    padding: 24px 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  .sidebar-section:last-child { border-bottom: none; flex: 1; }
+
+  .metric-row {
+    display: flex; justify-content: space-between; align-items: baseline;
+    margin-top: 14px;
+  }
+  .metric-name {
+    font-size: 13px; font-weight: 300; letter-spacing: 1px; color: var(--dim);
+  }
+  .metric-val {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 15px; color: var(--text);
+  }
+  .metric-val.green { color: var(--normal); }
+  .metric-val.red   { color: var(--fault); }
+  .metric-val.amber { color: var(--amber); }
+
+  /* ── Log ── */
+  .log-list {
+    margin-top: 12px;
+    height: 260px;
+    overflow-y: auto;
+    display: flex; flex-direction: column; gap: 4px;
+  }
+  .log-list::-webkit-scrollbar { width: 3px; }
+  .log-list::-webkit-scrollbar-thumb { background: var(--dim); border-radius: 2px; }
+
+  .log-entry {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 10px;
+    padding: 4px 8px;
+    border-radius: 2px;
+    display: flex; gap: 10px;
+    border-left: 2px solid transparent;
+    animation: fadein 0.3s ease;
+  }
+  .log-entry.normal { border-left-color: var(--normal); color: var(--normal); background: rgba(0,229,160,0.04); }
+  .log-entry.fault  { border-left-color: var(--fault);  color: var(--fault);  background: rgba(255,45,85,0.06); }
+  .log-entry.idle   { border-left-color: var(--dim);    color: var(--dim); }
+  .log-time { opacity: 0.5; flex-shrink: 0; }
+
+  @keyframes fadein { from { opacity: 0; transform: translateX(6px); } to { opacity: 1; transform: none; } }
+
+  /* ── Alert banner ── */
+  #alert-banner {
+    display: none;
+    position: fixed; bottom: 0; left: 0; right: 0;
+    background: var(--fault);
+    color: #fff;
+    font-size: 14px; font-weight: 800; letter-spacing: 4px;
+    text-align: center; padding: 10px;
+    text-transform: uppercase;
+    animation: blink-bg 0.5s infinite alternate;
+    z-index: 100;
+  }
+  @keyframes blink-bg {
+    from { opacity: 1; }
+    to   { opacity: 0.7; }
+  }
+
+  /* ── Stats counters ── */
+  .counter-grid {
+    display: grid; grid-template-columns: 1fr 1fr;
+    gap: 10px; margin-top: 14px;
+  }
+  .counter-box {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 12px 14px;
+  }
+  .counter-box .val {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 26px; font-weight: 600;
+  }
+  .counter-box .lbl {
+    font-size: 10px; letter-spacing: 2px; color: var(--dim);
+    text-transform: uppercase; margin-top: 2px;
+  }
+  .counter-box.n .val { color: var(--normal); }
+  .counter-box.f .val { color: var(--fault); }
+
+  /* ── Responsive ── */
+  @media (max-width: 768px) {
+    main { grid-template-columns: 1fr; grid-template-rows: auto auto auto; }
+    .sidebar { grid-column: 1; grid-row: 3; border-left: none; border-top: 1px solid var(--border); }
+    .wave-panel { grid-row: 2; border-right: none; }
+    .status-panel { grid-row: 1; border-right: none; padding: 32px 20px; }
+    .status-badge { font-size: 52px; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <div class="logo-icon">⚙</div>
+    <div>
+      <div class="logo-text">FaultSense</div>
+      <div class="logo-sub">MACHINE AUDIO CLASSIFIER · RF MODEL</div>
+    </div>
+  </div>
+  <div class="header-right">
+    <div id="clock">--:--:--</div>
+    <div>LIVE MONITORING</div>
+    <div id="uptime">UP 0s</div>
+  </div>
+</header>
+
+<main>
+  <!-- Status -->
+  <div class="status-panel">
+    <div class="status-inner">
+      <div class="status-label">Current State</div>
+      <div class="status-badge idle" id="status-badge">WAITING</div>
+      <div class="confidence-bar-wrap">
+        <span style="font-size:10px;letter-spacing:2px;color:var(--dim);font-family:'Share Tech Mono',monospace;">CONF</span>
+        <div class="confidence-bar-bg">
+          <div class="confidence-bar-fill" id="conf-fill"></div>
+        </div>
+        <span class="confidence-val" id="conf-val">—</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Waveform -->
+  <div class="wave-panel">
+    <div class="panel-title">▶ Live Waveform · 1s window</div>
+    <canvas id="waveform" width="800" height="140"></canvas>
+    <div style="display:flex;gap:24px;margin-top:4px;">
+      <span style="font-family:'Share Tech Mono',monospace;font-size:10px;color:var(--dim);">
+        RMS <span id="rms-val" style="color:var(--amber)">—</span>
+      </span>
+      <span style="font-family:'Share Tech Mono',monospace;font-size:10px;color:var(--dim);">
+        PREDICTIONS/MIN <span id="ppm" style="color:var(--amber)">—</span>
+      </span>
+    </div>
+  </div>
+
+  <!-- Sidebar -->
+  <div class="sidebar">
+
+    <div class="sidebar-section">
+      <div class="panel-title">▶ Session Counts</div>
+      <div class="counter-grid">
+        <div class="counter-box n">
+          <div class="val" id="cnt-normal">0</div>
+          <div class="lbl">Normal</div>
+        </div>
+        <div class="counter-box f">
+          <div class="val" id="cnt-fault">0</div>
+          <div class="lbl">Fault</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="panel-title">▶ Metrics</div>
+      <div class="metric-row">
+        <span class="metric-name">Last Prediction</span>
+        <span class="metric-val" id="m-last">—</span>
+      </div>
+      <div class="metric-row">
+        <span class="metric-name">Confidence</span>
+        <span class="metric-val amber" id="m-conf">—</span>
+      </div>
+      <div class="metric-row">
+        <span class="metric-name">Audio Level</span>
+        <span class="metric-val" id="m-rms">—</span>
+      </div>
+      <div class="metric-row">
+        <span class="metric-name">Fault Rate</span>
+        <span class="metric-val" id="m-frate">—</span>
+      </div>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="panel-title">▶ Event Log</div>
+      <div class="log-list" id="log-list"></div>
+    </div>
+
+  </div>
+</main>
+
+<div id="alert-banner">⚠ FAULT DETECTED — CHECK MACHINE</div>
+
+<script>
+  // ── State
+  let cntNormal = 0, cntFault = 0, totalPreds = 0;
+  let startTime = Date.now();
+  let lastPred = '';
+  let predTimes = [];
+
+  // ── Clock
+  function updateClock() {
+    const now = new Date();
+    document.getElementById('clock').textContent =
+      now.toTimeString().slice(0,8);
+    const up = Math.floor((Date.now() - startTime) / 1000);
+    const h = Math.floor(up/3600), m = Math.floor((up%3600)/60), s = up%60;
+    document.getElementById('uptime').textContent =
+      `UP ${h?h+'h ':''}${m?m+'m ':''}${s}s`;
+  }
+  setInterval(updateClock, 1000);
+  updateClock();
+
+  // ── Waveform canvas
+  const canvas = document.getElementById('waveform');
+  const ctx = canvas.getContext('2d');
+
+  function drawWaveform(data, prediction) {
+    const W = canvas.width, H = canvas.height;
+    ctx.clearRect(0, 0, W, H);
+
+    // background grid
+    ctx.strokeStyle = 'rgba(30,37,48,0.8)';
+    ctx.lineWidth = 1;
+    for (let i = 1; i < 4; i++) {
+      ctx.beginPath();
+      ctx.moveTo(0, H/4*i); ctx.lineTo(W, H/4*i);
+      ctx.stroke();
+    }
+    for (let i = 1; i < 8; i++) {
+      ctx.beginPath();
+      ctx.moveTo(W/8*i, 0); ctx.lineTo(W/8*i, H);
+      ctx.stroke();
+    }
+
+    // zero line
+    ctx.strokeStyle = 'rgba(74,90,108,0.4)';
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(0, H/2); ctx.lineTo(W, H/2); ctx.stroke();
+
+    if (!data || data.length === 0) return;
+
+    const color = prediction === 'FAULT' ? '#ff2d55' :
+                  prediction === 'NORMAL' ? '#00e5a0' : '#4a5568';
+
+    // glow pass
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 8;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    const step = W / data.length;
+    for (let i = 0; i < data.length; i++) {
+      const x = i * step;
+      const y = H/2 - (data[i] * H * 0.45);
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+  }
+
+  // ── Log
+  const MAX_LOG = 60;
+  function addLog(prediction, confidence) {
+    const list = document.getElementById('log-list');
+    const now = new Date().toTimeString().slice(0,8);
+    const entry = document.createElement('div');
+    const cls = prediction === 'FAULT' ? 'fault' :
+                prediction === 'NORMAL' ? 'normal' : 'idle';
+    entry.className = `log-entry ${cls}`;
+    entry.innerHTML = `<span class="log-time">${now}</span><span>${prediction}</span><span style="opacity:0.6">${confidence}%</span>`;
+    list.insertBefore(entry, list.firstChild);
+    // trim
+    while (list.children.length > MAX_LOG) list.removeChild(list.lastChild);
+  }
+
+  // ── Predictions/min tracker
+  function calcPPM() {
+    const now = Date.now();
+    predTimes = predTimes.filter(t => now - t < 60000);
+    return predTimes.length;
+  }
+
+  // ── Update UI
+  function updateUI(data) {
+    const { prediction, confidence, audio, rms } = data;
+    const badge = document.getElementById('status-badge');
+
+    // Badge
+    badge.textContent = prediction;
+    badge.className = 'status-badge ' +
+      (prediction === 'FAULT' ? 'fault' :
+       prediction === 'NORMAL' ? 'normal' : 'idle');
+
+    // Confidence bar
+    const fill = document.getElementById('conf-fill');
+    const pct = confidence || 0;
+    fill.style.width = pct + '%';
+    fill.style.background =
+      prediction === 'FAULT' ? 'var(--fault)' :
+      prediction === 'NORMAL' ? 'var(--normal)' : 'var(--dim)';
+    document.getElementById('conf-val').textContent =
+      pct > 0 ? pct + '%' : '—';
+
+    // Waveform
+    drawWaveform(audio, prediction);
+
+    // RMS
+    document.getElementById('rms-val').textContent = rms || '—';
+    document.getElementById('m-rms').textContent = rms ? rms + ' mU' : '—';
+
+    // Alert banner
+    const banner = document.getElementById('alert-banner');
+    banner.style.display = prediction === 'FAULT' ? 'block' : 'none';
+
+    // Only log & count real predictions (not idle/error states)
+    if (prediction === 'NORMAL' || prediction === 'FAULT') {
+      if (prediction !== lastPred || totalPreds % 5 === 0) {
+        addLog(prediction, confidence);
+      }
+      if (prediction === 'NORMAL') cntNormal++;
+      else cntFault++;
+      totalPreds++;
+      predTimes.push(Date.now());
+      lastPred = prediction;
+    }
+
+    // Counters
+    document.getElementById('cnt-normal').textContent = cntNormal;
+    document.getElementById('cnt-fault').textContent  = cntFault;
+
+    // Metrics
+    const lastEl = document.getElementById('m-last');
+    lastEl.textContent = prediction;
+    lastEl.className = 'metric-val ' +
+      (prediction === 'FAULT' ? 'red' : prediction === 'NORMAL' ? 'green' : '');
+
+    document.getElementById('m-conf').textContent =
+      pct > 0 ? pct + '%' : '—';
+
+    const frate = totalPreds > 0
+      ? ((cntFault / totalPreds) * 100).toFixed(1) + '%'
+      : '—';
+    const frateEl = document.getElementById('m-frate');
+    frateEl.textContent = frate;
+    frateEl.className = 'metric-val ' +
+      (parseFloat(frate) > 30 ? 'red' : 'green');
+
+    document.getElementById('ppm').textContent = calcPPM();
+  }
+
+  // ── Poll /data every 1.1s
+  async function poll() {
+    try {
+      const res = await fetch('/data');
+      if (res.ok) {
+        const data = await res.json();
+        updateUI(data);
+      }
+    } catch(e) {
+      console.warn('Poll error:', e);
+    }
+    setTimeout(poll, 1100);
+  }
+
+  poll();
+</script>
+</body>
+</html>
